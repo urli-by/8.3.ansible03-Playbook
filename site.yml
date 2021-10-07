@@ -1,83 +1,49 @@
 ---
-- name: Install Java
-  hosts: all
-  tasks:
-    - name: Set facts for Java 11 vars
-      set_fact:
-        java_home: "/opt/jdk/{{ java_jdk_version }}"
-      tags: java
-    - name: Upload .tar.gz file containing binaries from local storage
-      copy:
-        src: "{{ java_oracle_jdk_package }}"
-        dest: "/tmp/jdk-{{ java_jdk_version }}.tar.gz"
-      register: download_java_binaries
-      until: download_java_binaries is succeeded
-      tags: java
-    - name: Ensure installation dir exists
-      become: true
-      become_user: root
-      file:
-        state: directory
-        path: "{{ java_home }}"
-      tags: java
-    - name: Extract java in the installation directory
-      become: true
-      unarchive:
-        copy: false
-        src: "/tmp/jdk-{{ java_jdk_version }}.tar.gz"
-        dest: "{{ java_home }}"
-        extra_opts: [--strip-components=1]
-        creates: "{{ java_home }}/bin/java"
-      tags:
-        - java
-    - name: Export environment variables
-      become: true
-      template:
-        src: jdk.sh.j2
-        dest: /etc/profile.d/jdk.sh
-      tags: java
 - name: Install Elasticsearch
   hosts: elasticsearch
-  tasks:
-    - name: Upload tar.gz Elasticsearch from remote URL
-      get_url:
-        url: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-{{ elastic_version }}-linux-x86_64.tar.gz"
-        dest: "/tmp/elasticsearch-{{ elastic_version }}-linux-x86_64.tar.gz"
-        mode: 0755
-        timeout: 60
-        force: true
-        validate_certs: false
-      register: get_elastic
-      until: get_elastic is succeeded
-      tags: elastic
-    - name: Create directrory for Elasticsearch
-      file:
-        state: directory
-        path: "{{ elastic_home }}"
-      tags: elastic
-    - name: Extract Elasticsearch in the installation directory
+  handlers:
+    - name: restart Elasticsearch
       become: true
-      unarchive:
-        copy: false
-        src: "/tmp/elasticsearch-{{ elastic_version }}-linux-x86_64.tar.gz"
-        dest: "{{ elastic_home }}"
-        extra_opts: [--strip-components=1]
-        creates: "{{ elastic_home }}/bin/elasticsearch"
-      tags:
-        - elastic
-    - name: Set environment Elastic
+      service:
+        name: elasticsearch
+        state: restarted
+        enabled: true
+  tasks:
+    - name: "Download Elasticsearch's rpm"
+      get_url:
+        url: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-{{ elk_stack_version }}-x86_64.rpm"
+        dest: "/tmp/elasticsearch-{{ elk_stack_version }}-x86_64.rpm"
+      register: download_elastic
+      until: download_elastic is succeeded
+      tags: elasticsearch
+    - name: Install Elasticsearch
+      become: true
+      yum:
+        name: "/tmp/elasticsearch-{{ elk_stack_version }}-x86_64.rpm"
+        state: present
+      notify: restart Elasticsearch
+      tags: elasticsearch
+    - name: Configure Elasticsearch
       become: true
       template:
-        src: templates/elk.sh.j2
-        dest: /etc/profile.d/elk.sh
-      tags: elastic
+        src: elasticsearch.yml.j2
+        dest: /etc/elasticsearch/elasticsearch.yml
+      notify: restart Elasticsearch
+      tags: elasticsearch
 - name: Install Kibana
-  hosts: elasticsearch
+  hosts: kibana
+  handlers:
+  - name: restart kibana
+    become: true
+    service:
+      name: kibana
+      state: restarted
+      enabled: true
   tasks:
-    - name: Upload tar.gz Kibana from remote URL
+    - name: Upload rpm Kibana from remote URL
       get_url:
-        url: "https://artifacts.elastic.co/downloads/kibana/kibana-{{ elastic_version }}-linux-x86_64.tar.gz"
-        dest: "/tmp/kibana-{{ kibana_version }}-linux-x86_64.tar.gz"
+        url: "https://artifacts.elastic.co/downloads/kibana/kibana-{{ kibana_version }}-x86_64.rpm"
+        dest: "/tmp/kibana-{{ kibana_version }}-x86_64.rpm"
         mode: 0755
         timeout: 60
         force: true
@@ -85,27 +51,66 @@
       register: get_kibana
       until: get_kibana is succeeded
       tags: kibana
-    - name: Create directrory for Kibana
-      file:
-        state: directory
-        path: "{{ kibana_home }}"
+    - name: Install Kibana
+      become: true
+      yum:
+        name: "/tmp/kibana-{{ kibana_version }}-x86_64.rpm"
+        state: present
       tags: kibana
-    - name: Extract Kibana in the installation directory
+    - name: Configure Kibana
       become: true
-      unarchive:
-        copy: false
-        src: "/tmp/kibana-{{ kibana_version }}-linux-x86_64.tar.gz"
-        dest: "{{ kibana_home }}"
-        extra_opts: [--strip-components=1]
-        creates: "{{ kibana_home }}/bin/kibana"
-      tags:
-        - kibana
-        - skip_ansible_lint
-    - name: Set environment E&K
+      template: 
+        src: kibana.yml.j2
+        dest: /etc/kibana/kibana.yml
+      notify: restart kibana
+      tags: kibana
+- name: Install filebeat
+  hosts: app
+  handlers:
+  - name: restart filebeat
+    become: true
+    systemd:
+      name: filebeat
+      state: restarted
+      enabled: true
+  tasks:
+    - name: Upload rpm filebeat from remote URL
+      get_url:
+        url: "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-{{ filebeat_version }}-x86_64.rpm"
+        dest: "/tmp/filebeat-{{ filebeat_version }}-x86_64.rpm"
+        mode: 0755
+        timeout: 60
+        force: true
+        validate_certs: false
+      register: get_filebeat
+      until: get_filebeat is succeeded
+      tags: filebeat
+    - name: Install filebeat
       become: true
-      template:
-        src: templates/elk.sh.j2
-        dest: /etc/profile.d/elk.sh
-      tags:
-        - elastic
-        - kibana
+      yum:
+        name: "/tmp/filebeat-{{ filebeat_version }}-x86_64.rpm"
+        state: present
+      notify: restart filebeat
+      tags: filebeat
+    - name: Configure filebeat
+      become: true
+      template: 
+        src: filebeat.yml.j2
+        dest: /etc/filebeat/filebeat.yml
+      notify: restart filebeat
+      tags: filebeat
+    - name: set filebeat systemwork
+      become: true
+      command:
+        cmd: filebeat modules enable system
+        chdir: /usr/share/filebeat/bin
+      tags: filebeat
+    - name: Load Kibana dashboard
+      become: true
+      command:
+        cmd: filebeat setup
+        chdir: /usr/share/filebeat/bin
+      register: filebeat_setup
+      until: filebeat_setup is succeeded
+      notify: restart filebeat
+      tags: filebeat
